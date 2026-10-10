@@ -1,3 +1,7 @@
+/*
+ * Programming Assignment 02: ls-v1.3.0
+ * Features: -l (long listing), -x (horizontal), default column display
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -6,34 +10,39 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <getopt.h>
 #include <pwd.h>
 #include <grp.h>
 #include <time.h>
 #include <limits.h>
-#include <sys/ioctl.h>
 
 extern int errno;
 
-void do_ls(const char *dir, int long_flag);
+void do_ls(const char *dir, int long_flag, int horiz_flag);
 void print_long(const char *dir, const char *name);
 void print_columns(char **names, int count);
+void print_horizontal(char **names, int count);
 
 int main(int argc, char *argv[])
 {
     int opt;
     int long_flag = 0;
+    int horiz_flag = 0;
 
-    // getopt scans argv for options like -l
-    while ((opt = getopt(argc, argv, "l")) != -1)
+    // getopt scans argv for options like -l and -x
+    while ((opt = getopt(argc, argv, "lx")) != -1)
     {
         switch (opt)
         {
         case 'l':
             long_flag = 1;
             break;
+        case 'x':
+            horiz_flag = 1;
+            break;
         default:
-            fprintf(stderr, "Usage: %s [-l] [dir...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l] [-x] [dir...]\n", argv[0]);
             exit(1);
         }
     }
@@ -41,21 +50,21 @@ int main(int argc, char *argv[])
     // optind = index of first non-option argument (a directory name)
     if (optind == argc)
     {
-        do_ls(".", long_flag);
+        do_ls(".", long_flag, horiz_flag);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
             printf("Directory listing of %s :\n", argv[i]);
-            do_ls(argv[i], long_flag);
+            do_ls(argv[i], long_flag, horiz_flag);
             puts("");
         }
     }
     return 0;
 }
 
-void do_ls(const char *dir, int long_flag)
+void do_ls(const char *dir, int long_flag, int horiz_flag)
 {
     struct dirent *entry;
     DIR *dp = opendir(dir);
@@ -103,11 +112,15 @@ void do_ls(const char *dir, int long_flag)
     }
     closedir(dp);
 
-    // Display
+    // Display: -l has priority over -x
     if (long_flag)
     {
         for (int i = 0; i < count; i++)
             print_long(dir, names[i]);
+    }
+    else if (horiz_flag)
+    {
+        print_horizontal(names, count);
     }
     else
     {
@@ -120,50 +133,9 @@ void do_ls(const char *dir, int long_flag)
     free(names);
 }
 
-void print_columns(char **names, int count)
-{
-    if (count == 0)
-        return;
-
-    // 1. Terminal width (fall back to 80 if ioctl fails, e.g. output is piped)
-    struct winsize w;
-    int term_width = 80;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0)
-        term_width = w.ws_col;
-
-    // 2. Longest filename decides the column width
-    size_t maxlen = 0;
-    for (int i = 0; i < count; i++)
-    {
-        size_t len = strlen(names[i]);
-        if (len > maxlen)
-            maxlen = len;
-    }
-    int col_width = maxlen + 2; // 2 spaces gap between columns
-
-    // 3. How many columns fit, and how many rows that needs
-    int cols = term_width / col_width;
-    if (cols < 1)
-        cols = 1;
-    int rows = (count + cols - 1) / cols; // ceiling division
-
-    // 4. "Down then across": item index = column * rows + row
-    for (int r = 0; r < rows; r++)
-    {
-        for (int c = 0; c < cols; c++)
-        {
-            int idx = c * rows + r;
-            if (idx >= count)
-                break;
-            printf("%-*s", col_width, names[idx]);
-        }
-        printf("\n");
-    }
-}
-
 void print_long(const char *dir, const char *name)
 {
-    // stat needs the full path, not just the file name
+    // lstat needs the full path, not just the file name
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", dir, name);
 
@@ -215,7 +187,7 @@ void print_long(const char *dir, const char *name)
     strftime(timebuf, sizeof(timebuf), "%b %e %H:%M", localtime(&st.st_mtime));
 
     // 6. Print everything on one line
-        printf("%s %2lu %-8s %-8s %8ld %s %s",
+    printf("%s %2lu %-8s %-8s %8ld %s %s",
            mode,
            (unsigned long)st.st_nlink,
            owner,
@@ -224,7 +196,7 @@ void print_long(const char *dir, const char *name)
            timebuf,
            name);
 
-    // For symlinks, also show the target
+    // 7. For symlinks, also show the target
     if (S_ISLNK(st.st_mode))
     {
         char target[PATH_MAX];
@@ -236,4 +208,79 @@ void print_long(const char *dir, const char *name)
         }
     }
     printf("\n");
-} 
+}
+
+void print_columns(char **names, int count)
+{
+    if (count == 0)
+        return;
+
+    // 1. Terminal width (fall back to 80 if ioctl fails, e.g. output is piped)
+    struct winsize w;
+    int term_width = 80;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0)
+        term_width = w.ws_col;
+
+    // 2. Longest filename decides the column width
+    size_t maxlen = 0;
+    for (int i = 0; i < count; i++)
+    {
+        size_t len = strlen(names[i]);
+        if (len > maxlen)
+            maxlen = len;
+    }
+    int col_width = maxlen + 2; // 2 spaces gap between columns
+
+    // 3. How many columns fit, and how many rows that needs
+    int cols = term_width / col_width;
+    if (cols < 1)
+        cols = 1;
+    int rows = (count + cols - 1) / cols; // ceiling division
+
+    // 4. "Down then across": item index = column * rows + row
+    for (int r = 0; r < rows; r++)
+    {
+        for (int c = 0; c < cols; c++)
+        {
+            int idx = c * rows + r;
+            if (idx >= count)
+                break;
+            printf("%-*s", col_width, names[idx]);
+        }
+        printf("\n");
+    }
+}
+
+void print_horizontal(char **names, int count)
+{
+    if (count == 0)
+        return;
+
+    struct winsize w;
+    int term_width = 80;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0)
+        term_width = w.ws_col;
+
+    size_t maxlen = 0;
+    for (int i = 0; i < count; i++)
+    {
+        size_t len = strlen(names[i]);
+        if (len > maxlen)
+            maxlen = len;
+    }
+    int col_width = maxlen + 2;
+
+    // Print left to right; start a new line when the next item won't fit
+    int pos = 0;
+    for (int i = 0; i < count; i++)
+    {
+        if (pos > 0 && pos + col_width > term_width)
+        {
+            printf("\n");
+            pos = 0;
+        }
+        printf("%-*s", col_width, names[i]);
+        pos += col_width;
+    }
+    printf("\n");
+}
