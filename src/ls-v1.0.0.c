@@ -11,11 +11,13 @@
 #include <grp.h>
 #include <time.h>
 #include <limits.h>
+#include <sys/ioctl.h>
 
 extern int errno;
 
 void do_ls(const char *dir, int long_flag);
 void print_long(const char *dir, const char *name);
+void print_columns(char **names, int count);
 
 int main(int argc, char *argv[])
 {
@@ -62,24 +64,101 @@ void do_ls(const char *dir, int long_flag)
         fprintf(stderr, "Cannot open directory : %s\n", dir);
         return;
     }
+
+    // Dynamic array of filenames: grows as needed
+    int capacity = 16;
+    int count = 0;
+    char **names = malloc(capacity * sizeof(char *));
+    if (names == NULL)
+    {
+        perror("malloc");
+        closedir(dp);
+        return;
+    }
+
     errno = 0;
     while ((entry = readdir(dp)) != NULL)
     {
         if (entry->d_name[0] == '.')
             continue;
 
-        if (long_flag)
-            print_long(dir, entry->d_name);
-        else
-            printf("%s\n", entry->d_name);
+        // Array full? Double its size
+        if (count == capacity)
+        {
+            capacity *= 2;
+            char **tmp = realloc(names, capacity * sizeof(char *));
+            if (tmp == NULL)
+            {
+                perror("realloc");
+                break;
+            }
+            names = tmp;
+        }
+        names[count++] = strdup(entry->d_name);
     }
 
     if (errno != 0)
     {
         perror("readdir failed");
     }
-
     closedir(dp);
+
+    // Display
+    if (long_flag)
+    {
+        for (int i = 0; i < count; i++)
+            print_long(dir, names[i]);
+    }
+    else
+    {
+        print_columns(names, count);
+    }
+
+    // Free everything we allocated
+    for (int i = 0; i < count; i++)
+        free(names[i]);
+    free(names);
+}
+
+void print_columns(char **names, int count)
+{
+    if (count == 0)
+        return;
+
+    // 1. Terminal width (fall back to 80 if ioctl fails, e.g. output is piped)
+    struct winsize w;
+    int term_width = 80;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0)
+        term_width = w.ws_col;
+
+    // 2. Longest filename decides the column width
+    size_t maxlen = 0;
+    for (int i = 0; i < count; i++)
+    {
+        size_t len = strlen(names[i]);
+        if (len > maxlen)
+            maxlen = len;
+    }
+    int col_width = maxlen + 2; // 2 spaces gap between columns
+
+    // 3. How many columns fit, and how many rows that needs
+    int cols = term_width / col_width;
+    if (cols < 1)
+        cols = 1;
+    int rows = (count + cols - 1) / cols; // ceiling division
+
+    // 4. "Down then across": item index = column * rows + row
+    for (int r = 0; r < rows; r++)
+    {
+        for (int c = 0; c < cols; c++)
+        {
+            int idx = c * rows + r;
+            if (idx >= count)
+                break;
+            printf("%-*s", col_width, names[idx]);
+        }
+        printf("\n");
+    }
 }
 
 void print_long(const char *dir, const char *name)
