@@ -16,6 +16,7 @@
 #include <grp.h>
 #include <time.h>
 #include <limits.h>
+#include <strings.h>
 
 extern int errno;
 
@@ -23,6 +24,7 @@ void do_ls(const char *dir, int long_flag, int horiz_flag);
 void print_long(const char *dir, const char *name);
 void print_columns(char **names, int count);
 void print_horizontal(char **names, int count);
+int compare_names(const void *a, const void *b);
 
 int main(int argc, char *argv[])
 {
@@ -111,6 +113,8 @@ void do_ls(const char *dir, int long_flag, int horiz_flag)
         perror("readdir failed");
     }
     closedir(dp);
+
+    qsort(names, count, sizeof(char *), compare_names);
 
     // Display: -l has priority over -x
     if (long_flag)
@@ -283,4 +287,16 @@ void print_horizontal(char **names, int count)
         pos += col_width;
     }
     printf("\n");
+}
+
+int compare_names(const void *a, const void *b)
+{
+    const char *s1 = *(const char **)a;
+    const char *s2 = *(const char **)b;
+
+    // Case-insensitive first, like the real ls; strcmp breaks ties
+    int result = strcasecmp(s1, s2);
+    if (result != 0)
+        return result;
+    return strcmp(s1, s2);
 }
