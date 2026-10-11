@@ -1,12 +1,14 @@
 /*
- * Programming Assignment 02: ls-v1.3.0
- * Features: -l (long listing), -x (horizontal), default column display
+ * Programming Assignment 02: ls-v1.5.0
+ * Features: -l (long), -x (horizontal), column display,
+ *           alphabetical sort, colorized output
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -16,15 +18,25 @@
 #include <grp.h>
 #include <time.h>
 #include <limits.h>
-#include <strings.h>
+
+// ANSI escape codes
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BLUE    "\033[0;34m"
+#define COLOR_GREEN   "\033[0;32m"
+#define COLOR_RED     "\033[0;31m"
+#define COLOR_PINK    "\033[0;35m"
+#define COLOR_REVERSE "\033[7m"
 
 extern int errno;
 
 void do_ls(const char *dir, int long_flag, int horiz_flag);
 void print_long(const char *dir, const char *name);
-void print_columns(char **names, int count);
-void print_horizontal(char **names, int count);
+void print_columns(const char *dir, char **names, int count);
+void print_horizontal(const char *dir, char **names, int count);
 int compare_names(const void *a, const void *b);
+int has_suffix(const char *name, const char *suffix);
+const char *get_color(const char *dir, const char *name);
+void print_name(const char *dir, const char *name, int width);
 
 int main(int argc, char *argv[])
 {
@@ -114,6 +126,7 @@ void do_ls(const char *dir, int long_flag, int horiz_flag)
     }
     closedir(dp);
 
+    // Sort names alphabetically before displaying
     qsort(names, count, sizeof(char *), compare_names);
 
     // Display: -l has priority over -x
@@ -124,17 +137,66 @@ void do_ls(const char *dir, int long_flag, int horiz_flag)
     }
     else if (horiz_flag)
     {
-        print_horizontal(names, count);
+        print_horizontal(dir, names, count);
     }
     else
     {
-        print_columns(names, count);
+        print_columns(dir, names, count);
     }
 
     // Free everything we allocated
     for (int i = 0; i < count; i++)
         free(names[i]);
     free(names);
+}
+
+// Returns 1 if name ends with suffix
+int has_suffix(const char *name, const char *suffix)
+{
+    size_t n = strlen(name);
+    size_t s = strlen(suffix);
+    return n >= s && strcmp(name + n - s, suffix) == 0;
+}
+
+// Decide the color for a file based on its type and name
+const char *get_color(const char *dir, const char *name)
+{
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+
+    struct stat st;
+    if (lstat(path, &st) == -1)
+        return "";
+
+    if (S_ISLNK(st.st_mode))
+        return COLOR_PINK;
+    if (S_ISDIR(st.st_mode))
+        return COLOR_BLUE;
+    if (S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode) ||
+        S_ISSOCK(st.st_mode) || S_ISFIFO(st.st_mode))
+        return COLOR_REVERSE;
+    if (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))
+        return COLOR_GREEN;
+    if (has_suffix(name, ".tar") || has_suffix(name, ".gz") ||
+        has_suffix(name, ".zip"))
+        return COLOR_RED;
+
+    return "";
+}
+
+// Print a name in its color, then pad with spaces up to 'width'.
+// Padding is done by hand because escape codes would fool printf's %-*s.
+void print_name(const char *dir, const char *name, int width)
+{
+    const char *color = get_color(dir, name);
+    if (color[0] != '\0')
+        printf("%s%s%s", color, name, COLOR_RESET);
+    else
+        printf("%s", name);
+
+    int pad = width - (int)strlen(name);
+    for (int i = 0; i < pad; i++)
+        putchar(' ');
 }
 
 void print_long(const char *dir, const char *name)
@@ -190,15 +252,15 @@ void print_long(const char *dir, const char *name)
     char timebuf[32];
     strftime(timebuf, sizeof(timebuf), "%b %e %H:%M", localtime(&st.st_mtime));
 
-    // 6. Print everything on one line
-    printf("%s %2lu %-8s %-8s %8ld %s %s",
+    // 6. Print metadata, then the (colored) name
+    printf("%s %2lu %-8s %-8s %8ld %s ",
            mode,
            (unsigned long)st.st_nlink,
            owner,
            group,
            (long)st.st_size,
-           timebuf,
-           name);
+           timebuf);
+    print_name(dir, name, 0);
 
     // 7. For symlinks, also show the target
     if (S_ISLNK(st.st_mode))
@@ -214,7 +276,7 @@ void print_long(const char *dir, const char *name)
     printf("\n");
 }
 
-void print_columns(char **names, int count)
+void print_columns(const char *dir, char **names, int count)
 {
     if (count == 0)
         return;
@@ -249,13 +311,13 @@ void print_columns(char **names, int count)
             int idx = c * rows + r;
             if (idx >= count)
                 break;
-            printf("%-*s", col_width, names[idx]);
+            print_name(dir, names[idx], col_width);
         }
         printf("\n");
     }
 }
 
-void print_horizontal(char **names, int count)
+void print_horizontal(const char *dir, char **names, int count)
 {
     if (count == 0)
         return;
@@ -283,12 +345,14 @@ void print_horizontal(char **names, int count)
             printf("\n");
             pos = 0;
         }
-        printf("%-*s", col_width, names[i]);
+        print_name(dir, names[i], col_width);
         pos += col_width;
     }
     printf("\n");
 }
 
+// qsort passes pointers to the array elements; each element is a char*,
+// so a and b are really char** (pointer to a string pointer)
 int compare_names(const void *a, const void *b)
 {
     const char *s1 = *(const char **)a;
