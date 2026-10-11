@@ -1,7 +1,7 @@
 /*
- * Programming Assignment 02: ls-v1.5.0
+ * Programming Assignment 02: ls-v1.6.0
  * Features: -l (long), -x (horizontal), column display,
- *           alphabetical sort, colorized output
+ *           alphabetical sort, colorized output, -R (recursive)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +29,7 @@
 
 extern int errno;
 
-void do_ls(const char *dir, int long_flag, int horiz_flag);
+void do_ls(const char *dir, int long_flag, int horiz_flag, int recursive_flag);
 void print_long(const char *dir, const char *name);
 void print_columns(const char *dir, char **names, int count);
 void print_horizontal(const char *dir, char **names, int count);
@@ -43,9 +43,10 @@ int main(int argc, char *argv[])
     int opt;
     int long_flag = 0;
     int horiz_flag = 0;
+    int recursive_flag = 0;
 
-    // getopt scans argv for options like -l and -x
-    while ((opt = getopt(argc, argv, "lx")) != -1)
+    // getopt scans argv for options like -l, -x and -R
+    while ((opt = getopt(argc, argv, "lxR")) != -1)
     {
         switch (opt)
         {
@@ -55,8 +56,11 @@ int main(int argc, char *argv[])
         case 'x':
             horiz_flag = 1;
             break;
+        case 'R':
+            recursive_flag = 1;
+            break;
         default:
-            fprintf(stderr, "Usage: %s [-l] [-x] [dir...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l] [-x] [-R] [dir...]\n", argv[0]);
             exit(1);
         }
     }
@@ -64,21 +68,21 @@ int main(int argc, char *argv[])
     // optind = index of first non-option argument (a directory name)
     if (optind == argc)
     {
-        do_ls(".", long_flag, horiz_flag);
+        do_ls(".", long_flag, horiz_flag, recursive_flag);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
             printf("Directory listing of %s :\n", argv[i]);
-            do_ls(argv[i], long_flag, horiz_flag);
+            do_ls(argv[i], long_flag, horiz_flag, recursive_flag);
             puts("");
         }
     }
     return 0;
 }
 
-void do_ls(const char *dir, int long_flag, int horiz_flag)
+void do_ls(const char *dir, int long_flag, int horiz_flag, int recursive_flag)
 {
     struct dirent *entry;
     DIR *dp = opendir(dir);
@@ -102,6 +106,7 @@ void do_ls(const char *dir, int long_flag, int horiz_flag)
     errno = 0;
     while ((entry = readdir(dp)) != NULL)
     {
+        // Skips ".", ".." and hidden files
         if (entry->d_name[0] == '.')
             continue;
 
@@ -142,6 +147,27 @@ void do_ls(const char *dir, int long_flag, int horiz_flag)
     else
     {
         print_columns(dir, names, count);
+    }
+
+    // Recursion: visit every subdirectory (names are already sorted)
+    if (recursive_flag)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            char path[PATH_MAX];
+            snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+
+            // lstat (not stat) so symlinks to directories are NOT followed
+            struct stat st;
+            if (lstat(path, &st) == -1)
+                continue;
+
+            if (S_ISDIR(st.st_mode))
+            {
+                printf("\n%s:\n", path);
+                do_ls(path, long_flag, horiz_flag, recursive_flag);
+            }
+        }
     }
 
     // Free everything we allocated
